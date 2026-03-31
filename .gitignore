@@ -1,28 +1,30 @@
-# Virtual environment
+# --- Python & Environment ---
+__pycache__/
+*.pyc
 venv/
 .venv/
 env/
-
-
-
-
-# Model files
-*.pkl
-*.joblib
-*.h5
-*.pt
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Environment variables
 .env
 
-# IDE files
-.vscode/
-.idea/
+# --- Machine Learning ---
+# We REMOVE *.pkl from here because you NEED to share 'lumina_model.pkl' 
+# so the Streamlit app works for others.
+# Only ignore very large datasets or temporary logs.
+*.log
+.ipynb_checkpoints/
 
-# OS files
+# --- PlatformIO & Embedded (C++) ---
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+.wokwi-gateway.port
+
+# --- VS Code & System ---
+.vscode/
+.history/
 .DS_Store
 Thumbs.db
+
+# --- Streamlit ---
+.streamlit/config.toml
