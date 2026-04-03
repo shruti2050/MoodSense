@@ -4,130 +4,201 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
-# --- 1. PAGE CONFIG ---
-st.set_page_config(page_title="MoodSense AI", page_icon="💡", layout="wide")
+# Auto refresh every 5 sec
+st_autorefresh(interval=5000, key="refresh")
 
+st.set_page_config(page_title="LuminaAuto AI", layout="wide")
+
+# Load model
 @st.cache_resource
 def load_model():
-    # Ensure 'lumina_model.pkl' is in the same folder as this script
-    return joblib.load('lumina_model.pkl')
+    return joblib.load("lumina_model.pkl")
 
 model = load_model()
 
-# --- 2. WEATHER & HARDWARE LOGIC ---
+# Weather API
 def get_weather(city="Pune"):
-    api_key = "YOUR_API_KEY" # Optional: Replace with real key for live data
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
     try:
-        response = requests.get(url, timeout=2).json()
-        return response['main']['temp'], response['main']['humidity']
+        return 26.0, 50.0  # fallback (stable demo)
     except:
-        return 26.0, 50.0 
+        return 26.0, 50.0
 
-def send_to_hardware(predicted_pwm, gateway_url):
-    # Clean the URL to remove any trailing dots or spaces
-    clean_url = gateway_url.strip().rstrip('.')
-    url = f"http://{clean_url}/update" 
-    payload = {"pwm": int(predicted_pwm)}
+# Light sensor (ESP32)
+def get_light_data(ip):
     try:
-        # Short timeout to keep the UI responsive
-        response = requests.post(url, json=payload, timeout=1.5)
-        return response.status_code == 200
+        url = f"http://{ip.strip().rstrip('.')}/light"
+        return requests.get(url, timeout=2).json()['lux']
+    except:
+        return 0
+
+# Send PWM
+def send_to_hardware(pwm, ip):
+    try:
+        url = f"http://{ip.strip().rstrip('.')}/update"
+        return requests.post(url, json={"pwm": int(pwm)}, timeout=2).status_code == 200
     except:
         return False
 
-# --- 3. SIDEBAR INPUTS ---
-st.sidebar.header("📡 System Control Panel")
-city_input = st.sidebar.text_input("Location", "Pune")
-w_temp, w_hum = get_weather(city_input)
+# Sidebar
+st.sidebar.header("📡 Control Panel")
+ip = st.sidebar.text_input("ESP32 IP", "127.0.0.1:9080")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔌 Hardware Sync")
-# Defaulting to 127.0.0.1 as it is more stable than 'localhost' on Windows
-wokwi_ip = st.sidebar.text_input("Gateway Address", "127.0.0.1:9080")
+temp, hum = get_weather()
+lux = get_light_data(ip)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ Sensor Simulation")
-room_temp = st.sidebar.slider("Room Temp (°C)", 15, 40, int(w_temp))
-ambient_lux = st.sidebar.slider("Ambient Lux", 0, 1000, 200)
-mood = st.sidebar.selectbox("User Mood", [0, 1, 2], 
-                            format_func=lambda x: ["Relaxed", "Normal", "Focused"][x])
+st.sidebar.write(f"🌡 Temp: {temp}")
+st.sidebar.write(f"💧 Humidity: {hum}")
+st.sidebar.write(f"🌞 Lux: {lux}")
 
-# --- 4. MAIN PANEL ---
-st.title("💡 LuminaAuto: AI Lighting Control")
-st.info(f"System Online | Location: {city_input} | External Temp: {w_temp}°C")
+mood = st.sidebar.selectbox("Mood", [0,1,2],
+                           format_func=lambda x: ["Relaxed","Normal","Focused"][x])
 
-# --- 5. THE BUTTON & PREDICTION ---
-st.markdown("### 🚀 AI Command Center")
+# Store history
+if "lux_data" not in st.session_state:
+    st.session_state.lux_data = []
 
-# Updated for 2026 Streamlit compatibility
-if st.button("RUN AI INFERENCE", width='stretch'):
-    
-    # 1. PREDICTION LOGIC (Must come before Sync)
-    input_df = pd.DataFrame([[room_temp, w_hum, ambient_lux, mood]], 
-                            columns=['Temperature', 'Humidity', 'Ambient_Lux', 'Mood'])
-    
-    # Calculate the PWM value
-    prediction = model.predict(input_df)[0]
-    predicted_pwm = int(prediction)
-    
-    # Calculate energy saved vs full intensity (255)
-    energy_saved = max(0, ((255 - predicted_pwm) / 255) * 100)
+st.session_state.lux_data.append(lux)
+st.session_state.lux_data = st.session_state.lux_data[-20:]
 
-    # 2. HARDWARE SYNC LOGIC
-    sync_status = send_to_hardware(predicted_pwm, wokwi_ip)
-    
-    if sync_status:
-        st.success(f"✅ Hardware Synced: LED intensity set to {predicted_pwm}")
-    else:
-        st.error("❌ Hardware Offline: Ensure Wokwi Simulator is running and Port 9080 is forwarded.")
+# Main UI
+st.title("💡 LuminaAuto Smart Lighting")
 
-    # --- 6. VISUAL RESULTS ---
-    st.markdown("---")
-    
-    # Big Result Display
-    st.markdown(f"""
-        <div style="background-color:#1e2130; padding:20px; border-radius:10px; border: 2px solid #00ffcc; text-align:center;">
-            <h1 style="color:#00ffcc; margin:0;">Target Intensity: {predicted_pwm} PWM</h1>
-            <p style="color:white; margin:0;">AI Decision Sent to ESP32 Actuator</p>
-        </div>
-    """, unsafe_allow_html=True)
+# Graph
+st.subheader("🌞 Live Light Graph")
+st.line_chart(pd.DataFrame({"Lux": st.session_state.lux_data}))
 
-    col1, col2 = st.columns([1, 1])
+# AI Prediction (AUTO)
+input_df = pd.DataFrame([[temp, hum, lux, mood]],
+                        columns=["Temperature","Humidity","Ambient_Lux","Mood"])
 
-    with col1:
-        # Efficiency Gauge
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = energy_saved,
-            title = {'text': "Energy Savings %"},
-            gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': "#00ff00"}}
-        ))
-        fig.update_layout(height=300, paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
-        st.plotly_chart(fig, use_container_width=True)
+predicted_pwm = int(model.predict(input_df)[0])
 
-    with col2:
-        # JSON Bundle display
-        st.write("**📦 JSON Data Bundle (Outbound)**")
-        st.json({
-            "temp_sensor": room_temp,
-            "ambient_lux": ambient_lux,
-            "mood_index": mood,
-            "actuation_pwm": predicted_pwm,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+# Send to ESP32
+send_to_hardware(predicted_pwm, ip)
 
-    # --- 7. FINANCIAL IMPACT ---
-    st.markdown("### 💰 Financial Impact")
-    trad_cost = 1200 # Placeholder for traditional monthly cost
-    savings = int(trad_cost * (energy_saved/100))
-    
-    df_calc = pd.DataFrame({
-        "Metric": ["Monthly Cost (Traditional)", "Monthly Cost (AI Optimized)", "Total Savings"],
-        "Value": [f"₹{trad_cost}", f"₹{trad_cost - savings}", f"₹{savings}"]
-    })
-    st.table(df_calc)
+# Display
+st.metric("💡 LED Intensity (PWM)", predicted_pwm)
 
+# Status
+if predicted_pwm < 80:
+    st.success("🌙 Dark → LED Bright")
+elif predicted_pwm < 160:
+    st.info("🌤 Moderate → Balanced")
 else:
-    st.warning("Awaiting user command. Adjust sensors and click the button above to begin.")
+    st.warning("☀️ Bright → LED Dim")
+
+# JSON
+st.json({
+    "temp": temp,
+    "humidity": hum,
+    "lux": lux,
+    "mood": mood,
+    "pwm": predicted_pwm,
+    "time": datetime.now().strftime("%H:%M:%S")
+})
+
+# financial section
+
+def calculate_bill(units):
+    cost = 0
+
+    if units <= 100:
+        cost += units * 4
+    elif units <= 200:
+        cost += 100 * 4 + (units - 100) * 5
+    elif units <= 400:
+        cost += 100 * 4 + 100 * 5 + (units - 200) * 6.5
+    else:
+        cost += 100 * 4 + 100 * 5 + 200 * 6.5 + (units - 400) * 8
+
+    return cost
+MAX_WATT = 10
+HOURS_PER_DAY = 8
+EFFICIENCY = 0.9
+
+# Daily energy
+trad_energy = (MAX_WATT / 1000) * HOURS_PER_DAY
+ai_energy = (predicted_pwm / 255) * (MAX_WATT / 1000) * HOURS_PER_DAY * EFFICIENCY
+
+# Monthly units
+trad_month_units = trad_energy * 30
+ai_month_units = ai_energy * 30
+
+# Yearly units
+trad_year_units = trad_energy * 365
+ai_year_units = ai_energy * 365
+
+# Bills using slab
+trad_bill = calculate_bill(trad_month_units)
+ai_bill = calculate_bill(ai_month_units)
+
+monthly_saving = trad_bill - ai_bill
+yearly_saving = monthly_saving * 12
+
+CO2_PER_KWH = 0.82
+
+monthly_co2_saved = (trad_month_units - ai_month_units) * CO2_PER_KWH
+yearly_co2_saved = monthly_co2_saved * 12
+
+
+
+
+
+st.markdown("### ⚡ Smart Energy Analytics")
+
+df = pd.DataFrame({
+    "Metric": [
+        "Monthly Units (Traditional)",
+        "Monthly Units (AI)",
+        "Monthly Saving (₹)",
+        "Yearly Saving (₹)",
+        "CO₂ Saved / Month",
+        "CO₂ Saved / Year"
+    ],
+    "Value": [
+        f"{trad_month_units:.2f} kWh",
+        f"{ai_month_units:.2f} kWh",
+        f"₹{monthly_saving:.2f}",
+        f"₹{yearly_saving:.2f}",
+        f"{monthly_co2_saved:.2f} kg",
+        f"{yearly_co2_saved:.2f} kg"
+    ]
+})
+
+st.table(df)
+
+# st.markdown("### ⚡ Energy & Cost Analysis")
+
+# MAX_WATT = 10
+# HOURS_PER_DAY = 8
+# COST_PER_KWH = 8
+
+# # Energy calculations
+# trad_energy = (MAX_WATT / 1000) * HOURS_PER_DAY
+# ai_energy = (predicted_pwm / 255) * (MAX_WATT / 1000) * HOURS_PER_DAY
+# energy_saved = trad_energy - ai_energy
+
+# monthly_saving = energy_saved * 30 * COST_PER_KWH
+
+# df_energy = pd.DataFrame({
+#     "Metric": [
+#         "Daily Energy (Traditional)",
+#         "Daily Energy (AI)",
+#         "Daily Energy Saved",
+#         "Monthly Cost Savings"
+#     ],
+#     "Value": [
+#         f"{trad_energy:.3f} kWh",
+#         f"{ai_energy:.3f} kWh",
+#         f"{energy_saved:.3f} kWh",
+#         f"₹{monthly_saving:.2f}"
+#     ]
+# })
+
+# st.table(df_energy)
+
+st.bar_chart(pd.DataFrame({
+    "Units": [trad_month_units, ai_month_units]
+}, index=["Traditional", "AI"]))    
